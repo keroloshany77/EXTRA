@@ -1,0 +1,151 @@
+'use client';
+import { useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import Link from 'next/link';
+import { createClient } from '@/lib/supabase/browser';
+import { getCurrentAdmin } from '@/lib/supabase/admin';
+import { authRateLimitMessage, handleAuthRateLimit, isAuthCoolingDown, isRateLimitError } from '@/lib/supabase/authState';
+import '@/styles/pages/login.css';
+
+export default function LoginPage() {
+  const router = useRouter();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const submitLockRef = useRef(false);
+  const redirectingRef = useRef(false);
+
+  useEffect(() => {
+    const next = (() => {
+      try {
+        const params = new URLSearchParams(window.location.search);
+        return params.get('next') || '';
+      } catch {
+        return '';
+      }
+    })();
+
+    if (isAuthCoolingDown()) return;
+
+    getCurrentAdmin()
+      .then(({ user, isAdmin }) => {
+        if (!user || redirectingRef.current) return;
+        redirectingRef.current = true;
+        const destination = isAdmin ? (next || '/admin') : '/';
+        router.replace(destination);
+      })
+      .catch(() => {});
+  }, [router]);
+
+  const handleLogin = async () => {
+    if (submitLockRef.current || isSubmitting || redirectingRef.current) return;
+    if (isAuthCoolingDown()) {
+      setErrorMsg(authRateLimitMessage());
+      return;
+    }
+
+    if (!email || !password) {
+      setErrorMsg('PLEASE FILL IN ALL FIELDS.');
+      return;
+    }
+    if (!email.includes('@')) {
+      setErrorMsg('PLEASE ENTER A VALID EMAIL.');
+      return;
+    }
+    
+    setErrorMsg('');
+    setIsSubmitting(true);
+    submitLockRef.current = true;
+
+    const supabase = createClient();
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email,
+      password,
+    });
+
+    if (error) {
+      if (isRateLimitError(error)) handleAuthRateLimit(error);
+      setErrorMsg(isRateLimitError(error) ? authRateLimitMessage() : error.message.toUpperCase());
+      setIsSubmitting(false);
+      submitLockRef.current = false;
+      return;
+    }
+
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('role,status')
+      .eq('id', data?.user?.id || '')
+      .maybeSingle();
+    const isAdmin = profile?.role === 'admin' && profile?.status !== 'banned';
+
+    const destination = (() => {
+      const next = (() => {
+        try {
+          const params = new URLSearchParams(window.location.search);
+          return params.get('next') || '';
+        } catch {
+          return '';
+        }
+      })();
+      return isAdmin ? (next || '/admin') : '/';
+    })();
+    // Use a full navigation so cookies/session are definitely applied before middleware checks.
+    redirectingRef.current = true;
+    window.location.assign(destination);
+  };
+
+  return (
+    <main className="login-page">
+      <div className="login-wrap">
+        <div className="login-header">
+          <p className="login-label">✦ WELCOME BACK ✦</p>
+          <h1 className="login-title">LOGIN</h1>
+        </div>
+        <div className="login-form">
+          <div className="form-group">
+            <label className="form-label">EMAIL</label>
+            <input 
+              type="email" 
+              className="form-input" 
+              placeholder="YOUR EMAIL" 
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+            />
+          </div>
+          <div className="form-group">
+            <label className="form-label">PASSWORD</label>
+            <div className="input-wrap">
+              <input 
+                type={showPassword ? "text" : "password"}
+                className="form-input" 
+                placeholder="YOUR PASSWORD" 
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+              />
+              <ion-icon 
+                name={showPassword ? "eye-outline" : "eye-off-outline"}
+                className="eye-icon" 
+                onClick={() => setShowPassword(!showPassword)}
+                style={{ opacity: showPassword ? 0.4 : 1 }}
+              ></ion-icon>
+            </div>
+          </div>
+          <p className="form-error">{errorMsg}</p>
+          <button 
+            className="login-btn" 
+            onClick={handleLogin}
+            disabled={isSubmitting}
+            style={{ opacity: isSubmitting ? 0.7 : 1 }}
+          >
+            {isSubmitting ? 'LOGGING IN...' : 'LOGIN ⟶'}
+          </button>
+          <p className="login-footer">
+            DON'T HAVE AN ACCOUNT? <Link href="/register">CREATE ONE</Link>
+          </p>
+        </div>
+      </div>
+    </main>
+  );
+}
